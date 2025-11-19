@@ -3,9 +3,25 @@ import uuid  # Para gerar IDs únicas para os grupos
 from typing import Dict
 from fastapi import FastAPI, HTTPException, status
 from utils import realizar_sorteio_secreto
-
-# Importamos nossos schemas
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
+from dotenv import load_dotenv
+import os
 from schemas import Grupo, GrupoCreate, Participante, ParticipanteCreate
+
+load_dotenv()  
+
+# Configurações de conexão puxando do .env
+conf = ConnectionConfig(
+    MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
+    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
+    MAIL_FROM = os.getenv("MAIL_FROM"),
+    MAIL_PORT = int(os.getenv("MAIL_PORT")),
+    MAIL_SERVER = os.getenv("MAIL_SERVER"),
+    MAIL_STARTTLS = True,
+    MAIL_SSL_TLS = False,
+    USE_CREDENTIALS = True,
+    VALIDATE_CERTS = True
+)
 
 # ----------------------------------------------------------------
 # Inicialização da API
@@ -152,39 +168,44 @@ async def remover_participante(id_grupo: str, email: str):
     grupo.participantes = nova_lista_participantes
     return grupo
 
-@app.post("/grupos/{id_grupo}/sortear/", 
-          summary="Realiza o sorteio do amigo secreto")
+@app.post("/grupos/{id_grupo}/sortear/", summary="Realiza o sorteio e envia e-mails")
 async def sortear_grupo(id_grupo: str):
-    """
-    Realiza o sorteio. 
     
-    - Verifica se há pelo menos 3 participantes.
-    - Embaralha e define os pares.
-    - (Futuro: Envia os emails).
-    - Retorna apenas uma mensagem de sucesso, sem revelar os pares.
-    """
     grupo = db_grupos.get(id_grupo)
     if not grupo:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Grupo não encontrado"
-        )
+        raise HTTPException(status_code=404, detail="Grupo não encontrado")
         
     if len(grupo.participantes) < 3:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="É necessário ter pelo menos 3 participantes para realizar o sorteio."
-        )
+        raise HTTPException(status_code=400, detail="Mínimo de 3 participantes necessário.")
     
-    # Chama a nossa função de lógica
+    # 1. Realiza o sorteio (Lógica pura)
     resultado_pares = realizar_sorteio_secreto(grupo.participantes)
     
-    # --- AREA DE DEBUG (Para você ver no terminal) ---
-    print("-" * 30)
-    print(f"SORTEIO REALIZADO PARA O GRUPO: {grupo.nome_grupo}")
-    for quem_da, quem_recebe_nome in resultado_pares.items():
-        print(f"{quem_da} --> vai presentear --> {quem_recebe_nome}")
-    print("-" * 30)
-    # -------------------------------------------------
+    # 2. Prepara o envio de e-mails
+    fm = FastMail(conf)
     
-    return {"message": "Sorteio realizado com sucesso! Os participantes receberão o resultado por e-mail."}
+    # Vamos percorrer o dicionário de resultados
+    # email_quem_da = O email da pessoa que vai receber o aviso
+    # nome_quem_recebe = O nome do amigo secreto dela
+    for email_quem_da, nome_quem_recebe in resultado_pares.items():
+        
+        # Corpo do e-mail (HTML simples)
+        html = f"""
+        <h1>🎅 Ho Ho Ho! O Sorteio foi realizado! 🎅</h1>
+        <p>Olá!</p>
+        <p>Seu amigo secreto no grupo <b>{grupo.nome_grupo}</b> é:</p>
+        <h2 style="color: red;">🎁 {nome_quem_recebe} 🎁</h2>
+        <p>Prepare o presente e não seja miseravinho e preguiçoso!</p>
+        """
+
+        message = MessageSchema(
+            subject=f"Amigo Secreto - {grupo.nome_grupo}",
+            recipients=[email_quem_da],  # Quem recebe o e-mail
+            body=html,
+            subtype=MessageType.html
+        )
+
+        # Envia o e-mail (await garante que esperamos o envio)
+        await fm.send_message(message)
+    
+    return {"message": "Sorteio realizado e e-mails enviados com sucesso!"}
